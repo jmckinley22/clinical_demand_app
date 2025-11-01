@@ -1,4 +1,9 @@
 import math
+import os
+import sys
+
+# Ensure project root is on sys.path so tests can import local modules
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from clinical_demand import DosingParams, calculate_group_demand
 
