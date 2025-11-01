@@ -57,3 +57,6 @@ ipython_config.py
 
 # Other
 *.sqlite3
+
+# Saved CSV outputs from the Streamlit app
+outputs/

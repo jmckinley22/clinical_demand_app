@@ -6,11 +6,12 @@ calculate total patient-level demand. It leverages `clinical_demand.calculate_gr
 from dataclasses import asdict
 from io import StringIO
 import csv
-from typing import List
+from typing import List, Optional
 import os
 from datetime import datetime
 import smtplib
 from email.message import EmailMessage
+import re
 
 import streamlit as st
 
@@ -57,13 +58,27 @@ def trial_section(trial_index: int):
     return trial_total, groups
 
 
-def format_csv(rows: List[dict]) -> str:
-    if not rows:
+def format_csv(rows: List[dict], summary: Optional[dict] = None) -> str:
+    """Return CSV string of rows with optional summary header lines.
+
+    If summary is provided, key,value pairs are written at the top as comment-style lines,
+    followed by a blank line and then the regular CSV table.
+    """
+    if not rows and not summary:
         return ""
+
     output = StringIO()
-    writer = csv.DictWriter(output, fieldnames=list(rows[0].keys()))
-    writer.writeheader()
-    writer.writerows(rows)
+    # Write summary lines first
+    if summary:
+        for k, v in summary.items():
+            output.write(f"# {k}: {v}\n")
+        output.write("\n")
+
+    if rows:
+        writer = csv.DictWriter(output, fieldnames=list(rows[0].keys()))
+        writer.writeheader()
+        writer.writerows(rows)
+
     return output.getvalue()
 
 
@@ -77,6 +92,22 @@ def save_csv_to_disk(csv_content: str, filename: str | None = None) -> str:
     with open(path, "w", encoding="utf-8", newline="") as fh:
         fh.write(csv_content)
     return path
+
+
+def slugify(value: str) -> str:
+    """Simple filename-safe slugifier: keep alphanum and underscores."""
+    value = value.strip().lower()
+    value = re.sub(r"[^a-z0-9 _-]", "", value)
+    value = re.sub(r"[\s-]+", "_", value)
+    return value
+
+
+def list_saved_csvs(directory: str = "outputs") -> List[str]:
+    if not os.path.isdir(directory):
+        return []
+    files = [f for f in os.listdir(directory) if f.lower().endswith(".csv")]
+    files = sorted(files, key=lambda f: os.path.getmtime(os.path.join(directory, f)), reverse=True)
+    return files
 
 
 def send_email_with_attachment(smtp_server: str, smtp_port: int, username: str, password: str, from_addr: str, to_addr: str, subject: str, body: str, attachment_bytes: bytes, attachment_name: str) -> None:
@@ -132,51 +163,100 @@ def main():
         st.metric("Total Patient Demand (all trials)", f"{int(round(total_demand)):,}")
 
         # Always prepare CSV content in case user wants to save or email it
-        csv_content = format_csv(all_groups)
+        summary = {
+            "Title": st.session_state.get("scenario_title", ""),
+            "GeneratedAtUTC": datetime.utcnow().isoformat(),
+            "TotalDemand": int(round(total_demand)),
+            "NumTrials": int(num_trials),
+        }
+
+        csv_content = format_csv(all_groups, summary=summary)
 
         if show_breakdown and all_groups:
             st.markdown("### Demand breakdown by trial and group")
             st.dataframe(all_groups)
             st.download_button("Download breakdown CSV", data=csv_content, file_name="demand_breakdown.csv", mime="text/csv")
 
-            # Save to server button
+            # Save to server button (with optional title included in filename)
             if st.button("Save breakdown to server (outputs/)"):
                 try:
-                    saved_path = save_csv_to_disk(csv_content)
+                    title = st.session_state.get("scenario_title")
+                    filename = None
+                    if title:
+                        filename = f"{slugify(title)}_{datetime.utcnow().strftime('%Y%m%dT%H%M%SZ')}.csv"
+                    saved_path = save_csv_to_disk(csv_content, filename=filename)
                     st.success(f"Saved CSV to {saved_path}")
                 except Exception as e:
                     st.error(f"Error saving CSV: {e}")
 
-        # Email sending controls in the sidebar (keeps UI uncluttered)
-        with st.sidebar.expander("Email results (SMTP)"):
-            st.markdown("Send the generated CSV as an email attachment. Enter SMTP details below.")
-            smtp_server = st.text_input("SMTP server (e.g. smtp.gmail.com)")
-            smtp_port = st.number_input("SMTP port", value=587, min_value=1, max_value=65535)
-            smtp_user = st.text_input("SMTP username")
-            smtp_pass = st.text_input("SMTP password", type="password")
-            from_email = st.text_input("From email address")
-            to_email = st.text_input("To email address (comma-separated)")
-            subject = st.text_input("Email subject", value="Clinical trial demand results")
-            message = st.text_area("Email body", value="Attached is the demand breakdown CSV.")
+    # Sidebar: saved files listing and email/send options
+    with st.sidebar.expander("Saved CSVs & Email"):
+        st.markdown("### Saved CSV files")
+        saved = list_saved_csvs()
+        if saved:
+            selected = st.selectbox("Select a saved CSV", options=saved)
+            selected_path = os.path.join("outputs", selected)
+            st.write("Saved file:", selected)
+            # Download selected file
+            try:
+                with open(selected_path, "rb") as fh:
+                    data_bytes = fh.read()
+                st.download_button("Download selected CSV", data=data_bytes, file_name=selected, mime="text/csv")
+            except Exception:
+                st.info("Unable to read selected file (it may have been removed).")
 
-            if st.button("Send CSV by email"):
-                if not csv_content:
-                    st.error("No CSV content available to send. Ensure you have generated a breakdown first.")
-                elif not smtp_server or not smtp_user or not smtp_pass or not from_email or not to_email:
-                    st.error("Please fill in all SMTP and email fields before sending.")
+            st.markdown("---")
+        else:
+            st.info("No saved CSVs found in outputs/")
+
+        st.markdown("### Email (send current or selected CSV)")
+        st.markdown("Send the CSV as an email attachment. You can either send the currently generated CSV or a previously saved file.")
+        # Allow environment variables to pre-fill SMTP settings for safer automation.
+        env_smtp_server = os.environ.get("SMTP_SERVER", "")
+        env_smtp_port = os.environ.get("SMTP_PORT", "")
+        try:
+            default_smtp_port = int(env_smtp_port) if env_smtp_port and env_smtp_port.isdigit() else 587
+        except Exception:
+            default_smtp_port = 587
+        env_smtp_user = os.environ.get("SMTP_USER", "")
+        env_smtp_pass = os.environ.get("SMTP_PASS", "")
+        env_from_email = os.environ.get("FROM_EMAIL", "")
+
+        smtp_server = st.text_input("SMTP server (e.g. smtp.gmail.com)", value=env_smtp_server, key="smtp_server")
+        smtp_port = st.number_input("SMTP port", value=default_smtp_port, min_value=1, max_value=65535, key="smtp_port")
+        smtp_user = st.text_input("SMTP username", value=env_smtp_user, key="smtp_user")
+        smtp_pass = st.text_input("SMTP password", type="password", value=env_smtp_pass, key="smtp_pass")
+        from_email = st.text_input("From email address", value=env_from_email, key="from_email")
+        to_email = st.text_input("To email address (comma-separated)", key="to_email")
+        subject = st.text_input("Email subject", value="Clinical trial demand results", key="email_subject")
+        message = st.text_area("Email body", value="Attached is the demand breakdown CSV.", key="email_body")
+
+        choice = st.radio("Attachment to send", options=("Current CSV", "Saved CSV"), key="email_choice")
+        if st.button("Send email with attachment"):
+            # determine attachment bytes
+            if choice == "Saved CSV":
+                if not saved:
+                    st.error("No saved file available to send.")
                 else:
                     try:
-                        # support multiple recipients
-                        recipients = [addr.strip() for addr in to_email.split(",") if addr.strip()]
-                        attachment_name = f"demand_breakdown_{datetime.utcnow().strftime('%Y%m%dT%H%M%SZ')}.csv"
-                        send_email_with_attachment(smtp_server=smtp_server, smtp_port=int(smtp_port), username=smtp_user, password=smtp_pass, from_addr=from_email, to_addr=", ".join(recipients), subject=subject, body=message, attachment_bytes=csv_content.encode("utf-8"), attachment_name=attachment_name)
-                        st.success(f"Email sent to: {', '.join(recipients)}")
+                        with open(selected_path, "rb") as fh:
+                            attachment_bytes = fh.read()
+                        attachment_name = selected
                     except Exception as e:
-                        st.error(f"Error sending email: {e}")
+                        st.error(f"Error reading selected file: {e}")
+                        attachment_bytes = None
+            else:
+                attachment_bytes = csv_content.encode("utf-8") if csv_content else None
+                attachment_name = f"demand_breakdown_{datetime.utcnow().strftime('%Y%m%dT%H%M%SZ')}.csv"
 
-    st.sidebar.markdown("---")
-    st.sidebar.markdown("Made with ❤️ — enter trial parameters and download results.")
-
-
-if __name__ == "__main__":
-    main()
+            if not attachment_bytes:
+                st.error("No attachment available to send.")
+            elif not smtp_server or not smtp_user or not smtp_pass or not from_email or not to_email:
+                st.error("Please fill in all SMTP and email fields before sending.")
+            else:
+                try:
+                    recipients = [addr.strip() for addr in to_email.split(",") if addr.strip()]
+                    send_email_with_attachment(smtp_server=smtp_server, smtp_port=int(smtp_port), username=smtp_user, password=smtp_pass, from_addr=from_email, to_addr=", ".join(recipients), subject=subject, body=message, attachment_bytes=attachment_bytes, attachment_name=attachment_name)
+                    st.success(f"Email sent to: {', '.join(recipients)}")
+                except Exception as e:
+                    st.error(f"Error sending email: {e}")
