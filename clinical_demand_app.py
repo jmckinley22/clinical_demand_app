@@ -31,18 +31,23 @@ def group_inputs(prefix: str):
 
 
 def trial_section(trial_index: int):
-    st.subheader(f"Trial {trial_index}")
-    num_groups = st.number_input(f"Number of treatment groups (Trial {trial_index})", min_value=1, max_value=12, value=2, step=1, key=f"trial_{trial_index}_groups")
+    # Allow the user to name the trial (friendly for non-technical users)
+    trial_name = st.text_input(f"Trial name (for display)", value=f"Trial {trial_index}", key=f"trial_{trial_index}_name")
+    st.subheader(trial_name)
+
+    num_groups = st.number_input(f"Number of treatment groups ({trial_name})", min_value=1, max_value=12, value=2, step=1, key=f"trial_{trial_index}_groups")
     trial_total = 0.0
     groups: List[dict] = []
 
     for group_index in range(1, int(num_groups) + 1):
-        with st.expander(f"Group {group_index}"):
-            prefix = f"trial{trial_index}_group{group_index}"
+        prefix = f"trial{trial_index}_group{group_index}"
+        # Allow the user to give each group a friendly name
+        group_name = st.text_input(f"Group name (Trial {trial_index} - Group {group_index})", value=f"Group {group_index}", key=f"{prefix}_name")
+        with st.expander(group_name):
             params = group_inputs(prefix)
             demand = calculate_group_demand(params)
             trial_total += demand
-            groups.append({**asdict(params), "demand": int(round(demand)), "trial": trial_index, "group": group_index})
+            groups.append({**asdict(params), "demand": int(round(demand)), "trial": trial_index, "trial_name": trial_name, "group": group_index, "group_name": group_name})
             st.markdown(f"**Group demand:** {int(round(demand)):,}")
 
     return trial_total, groups
