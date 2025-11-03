@@ -15,6 +15,7 @@ from email.message import EmailMessage
 import re
 
 # Third-party imports
+import pandas as pd
 import streamlit as st
 
 # Local imports
@@ -23,16 +24,15 @@ from clinical_demand import DosingParams, ProductParams, calculate_group_demand
 # Must set page config before creating any UI elements
 st.set_page_config(
     page_title="Clinical Trial Demand Calculator",
-    layout="wide",
     initial_sidebar_state="expanded",
     menu_items={
-        'Get Help': 'https://github.com/jmckinley22/dad_math#readme',
-        'Report a bug': 'https://github.com/jmckinley22/dad_math/issues/new',
+        'Get Help': 'https://github.com/jmckinley22/clinical_demand_app#readme',
+        'Report a bug': 'https://github.com/jmckinley22/clinical_demand_app/issues/new',
         'About': '''
         Clinical Trial Patient Demand Calculator
         
         Calculate total product demand across multiple trials and treatment groups.
-        Source code: https://github.com/jmckinley22/dad_math
+        Source code: https://github.com/jmckinley22/clinical_demand_app
         '''
     }
 )
@@ -213,6 +213,42 @@ def expand_product_rows(rows: List[dict]) -> Tuple[List[dict], Dict[str, str]]:
         expanded.append(newr)
 
     return expanded, sanitized_map
+
+
+def coerce_arrow_friendly_dataframe(rows: List[dict]) -> "pd.DataFrame":
+    """Return a DataFrame with column types coerced for Arrow compatibility.
+
+    Streamlit relies on Arrow tables for fast rendering. Mixed object columns
+    (like ints plus empty strings) trigger conversion errors. We replace empty
+    strings with NA, coerce numeric-like columns to numeric dtypes, and cast the
+    remaining object columns to pandas' nullable string dtype.
+    """
+    if not rows:
+        return pd.DataFrame()
+
+    df = pd.DataFrame(rows)
+    if df.empty:
+        return df
+
+    for col in df.columns:
+        if df[col].dtype != object:
+            continue
+
+        series = df[col].replace("", pd.NA)
+        non_na = series.dropna()
+
+        if not non_na.empty:
+            numeric_coerced = pd.to_numeric(non_na, errors="coerce")
+            if not numeric_coerced.isna().any():
+                df[col] = pd.to_numeric(series, errors="coerce")
+                # If values are all whole numbers, use pandas nullable Int64 dtype.
+                if pd.api.types.is_float_dtype(df[col]) and not df[col].dropna().mod(1).any():
+                    df[col] = df[col].astype("Int64")
+                continue
+
+        df[col] = series.astype("string")
+
+    return df
 
 
 def save_csv_to_disk(csv_content: str, filename: str | None = None) -> str:
@@ -460,7 +496,8 @@ def main():
 
     if show_breakdown and expanded_rows:
         st.markdown("### Demand breakdown by trial and group")
-        st.dataframe(expanded_rows)
+        breakdown_df = coerce_arrow_friendly_dataframe(expanded_rows)
+        st.dataframe(breakdown_df)
         # Allow the user to name the file before downloading. Persist the
         # choice in session state so it survives reruns.
         default_name = st.session_state.get(
