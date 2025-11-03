@@ -171,6 +171,13 @@ def main():
         }
 
         csv_content = format_csv(all_groups, summary=summary)
+        # Persist the latest generated CSV in session state so reloads or
+        # reruns (which Streamlit does on page refresh) still have access to it.
+        try:
+            st.session_state["_last_csv"] = csv_content
+        except Exception:
+            # If session state isn't available for some reason, continue without persisting.
+            pass
 
         if show_breakdown and all_groups:
             st.markdown("### Demand breakdown by trial and group")
@@ -193,6 +200,8 @@ def main():
     with st.sidebar.expander("Saved CSVs & Email"):
         st.markdown("### Saved CSV files")
         saved = list_saved_csvs()
+        selected = None
+        selected_path = None
         if saved:
             selected = st.selectbox("Select a saved CSV", options=saved)
             selected_path = os.path.join("outputs", selected)
@@ -233,30 +242,38 @@ def main():
 
         choice = st.radio("Attachment to send", options=("Current CSV", "Saved CSV"), key="email_choice")
         if st.button("Send email with attachment"):
-            # determine attachment bytes
-            if choice == "Saved CSV":
-                if not saved:
-                    st.error("No saved file available to send.")
-                else:
+            try:
+                # determine attachment bytes
+                if choice == "Saved CSV":
+                    if not saved or not selected_path:
+                        st.error("No saved file available to send.")
+                        st.stop()
                     try:
                         with open(selected_path, "rb") as fh:
                             attachment_bytes = fh.read()
                         attachment_name = selected
                     except Exception as e:
                         st.error(f"Error reading selected file: {e}")
-                        attachment_bytes = None
-            else:
-                attachment_bytes = csv_content.encode("utf-8") if csv_content else None
-                attachment_name = f"demand_breakdown_{datetime.utcnow().strftime('%Y%m%dT%H%M%SZ')}.csv"
+                        st.stop()
+                else:
+                    # Prefer the last persisted CSV in session state (survives reruns)
+                    attachment_str = st.session_state.get("_last_csv")
+                    if not attachment_str:
+                        attachment_str = csv_content if 'csv_content' in locals() else None
+                    attachment_bytes = attachment_str.encode("utf-8") if attachment_str else None
+                    attachment_name = f"demand_breakdown_{datetime.utcnow().strftime('%Y%m%dT%H%M%SZ')}.csv"
 
-            if not attachment_bytes:
-                st.error("No attachment available to send.")
-            elif not smtp_server or not smtp_user or not smtp_pass or not from_email or not to_email:
-                st.error("Please fill in all SMTP and email fields before sending.")
-            else:
-                try:
-                    recipients = [addr.strip() for addr in to_email.split(",") if addr.strip()]
-                    send_email_with_attachment(smtp_server=smtp_server, smtp_port=int(smtp_port), username=smtp_user, password=smtp_pass, from_addr=from_email, to_addr=", ".join(recipients), subject=subject, body=message, attachment_bytes=attachment_bytes, attachment_name=attachment_name)
-                    st.success(f"Email sent to: {', '.join(recipients)}")
-                except Exception as e:
-                    st.error(f"Error sending email: {e}")
+                if not attachment_bytes:
+                    st.error("No attachment available to send.")
+                    st.stop()
+
+                if not smtp_server or not smtp_user or not smtp_pass or not from_email or not to_email:
+                    st.error("Please fill in all SMTP and email fields before sending.")
+                    st.stop()
+
+                recipients = [addr.strip() for addr in to_email.split(",") if addr.strip()]
+                send_email_with_attachment(smtp_server=smtp_server, smtp_port=int(smtp_port), username=smtp_user, password=smtp_pass, from_addr=from_email, to_addr=", ".join(recipients), subject=subject, body=message, attachment_bytes=attachment_bytes, attachment_name=attachment_name)
+                st.success(f"Email sent to: {', '.join(recipients)}")
+            except Exception as e:
+                # Catch-all to ensure a reload doesn't raise an uncaught exception
+                st.error(f"Error sending email: {e}")
