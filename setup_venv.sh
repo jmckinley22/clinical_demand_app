@@ -4,7 +4,7 @@
 
 set -euo pipefail
 
-VENV_NAME=".venv2"
+VENV_NAME=".venv"
 PYTHON_CMD="python3"
 
 while [[ $# -gt 0 ]]; do

@@ -14,7 +14,7 @@ Prerequisites: Python 3.10+ and Git.
 
 From the project root:
 
-1. Create and configure the virtual environment (default name: `.venv2`):
+1. Create and configure the virtual environment (default name: `.venv`):
 
 ```bash
 ./setup_venv.sh
@@ -23,13 +23,13 @@ From the project root:
 You can customize the venv name or the Python binary:
 
 ```bash
-./setup_venv.sh --name .venv3 --python python3.11
+./setup_venv.sh --name custom_venv --python python3.11
 ```
 
 2. Activate the venv and run Jupyter Notebook (or JupyterLab):
 
 ```bash
-source .venv2/bin/activate
+source .venv/bin/activate
 jupyter notebook
 ```
 
@@ -40,7 +40,7 @@ jupyter notebook
 If you'd like to run the Streamlit app outside the notebook (normal Streamlit experience):
 
 ```bash
-source .venv2/bin/activate
+source .venv/bin/activate
 streamlit run clinical_demand_app.py
 ```
 

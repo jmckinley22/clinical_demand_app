@@ -3,20 +3,7 @@
 This provides a usable UI for non-technical users to configure trials and
 calculate total patient-level demand. It leverages `clinical_demand.calculate_group_demand`.
 """
-import streamlit as st
-
-# Must set page config before any other Streamlit commands
-st.set_page_config(
-    page_title="Clinical Trial Demand Calculator",
-    layout="wide",  # Use full screen width
-    initial_sidebar_state="expanded",  # Show sidebar by default
-    menu_items={
-        'Get Help': 'https://github.com/jmckinley22/dad_math',
-        'Report a bug': 'https://github.com/jmckinley22/dad_math/issues',
-        'About': 'Clinical Trial Patient Demand Calculator - Calculate total product demand across multiple trials.'
-    }
-)
-
+# Standard library imports first
 from dataclasses import asdict
 from io import StringIO
 import csv
@@ -27,7 +14,28 @@ import smtplib
 from email.message import EmailMessage
 import re
 
+# Third-party imports
+import streamlit as st
+
+# Local imports
 from clinical_demand import DosingParams, calculate_group_demand
+
+# Must set page config before creating any UI elements
+st.set_page_config(
+    page_title="Clinical Trial Demand Calculator",
+    layout="wide",
+    initial_sidebar_state="expanded",
+    menu_items={
+        'Get Help': 'https://github.com/jmckinley22/dad_math#readme',
+        'Report a bug': 'https://github.com/jmckinley22/dad_math/issues/new',
+        'About': '''
+        Clinical Trial Patient Demand Calculator
+        
+        Calculate total product demand across multiple trials and treatment groups.
+        Source code: https://github.com/jmckinley22/dad_math
+        '''
+    }
+)
 
 
 def group_inputs(prefix: str):
