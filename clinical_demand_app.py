@@ -364,6 +364,7 @@ def send_email_with_attachment(smtp_server: str, smtp_port: int, username: str, 
 def main():
     st.title("Clinical Trial Demand Calculator")
     st.write("")  # Add space after title
+    st.markdown("Made by Jackson McKinley - github.com/jmckinley22/clinical_demand_app")
     st.markdown(
         "Use the controls to model trials and treatment groups. Results show total product administrations needed (including buffer)."
     )
