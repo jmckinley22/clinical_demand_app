@@ -1,11 +1,16 @@
 [server]
-# Force wide mode for better data display
+# Force wide mode and ensure proper layout
 layout = "wide"
+showSidebarNavigation = true
 
 [theme]
-# Use a clean light theme that works well for data/tables
+# Clean, readable theme optimized for data display
 primaryColor = "#FF4B4B"
 backgroundColor = "#FFFFFF"
 secondaryBackgroundColor = "#F0F2F6"
 textColor = "#262730"
 font = "sans serif"
+
+[browser]
+gatherUsageStats = false
+serverAddress = "localhost"

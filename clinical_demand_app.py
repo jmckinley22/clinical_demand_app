@@ -3,6 +3,15 @@
 This provides a usable UI for non-technical users to configure trials and
 calculate total patient-level demand. It leverages `clinical_demand.calculate_group_demand`.
 """
+import streamlit as st
+
+# Must set page config before any other Streamlit commands
+st.set_page_config(
+    page_title="Clinical Trial Demand Calculator",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
+
 from dataclasses import asdict
 from io import StringIO
 import csv
@@ -12,8 +21,6 @@ from datetime import datetime
 import smtplib
 from email.message import EmailMessage
 import re
-
-import streamlit as st
 
 from clinical_demand import DosingParams, calculate_group_demand
 
@@ -133,14 +140,14 @@ def send_email_with_attachment(smtp_server: str, smtp_port: int, username: str, 
 
 
 def main():
-    st.set_page_config(page_title="Clinical Trial Demand Calculator", layout="wide")
-    st.title("Clinical Trial Patient Demand Calculator")
-
+    st.title("Clinical Trial Demand Calculator")
+    st.write("")  # Add space after title
     st.markdown(
         "Use the controls to model trials and treatment groups. Results show total product administrations needed (including buffer)."
     )
+    st.write("")  # Add space after intro
 
-    col1, col2 = st.columns([1, 3])
+    col1, col2 = st.columns([2, 3])  # More balanced ratio
 
     with col1:
         num_trials = st.number_input("Number of trials to model", min_value=1, max_value=10, value=1, step=1)
@@ -197,8 +204,10 @@ def main():
                     st.error(f"Error saving CSV: {e}")
 
     # Sidebar: saved files listing and email/send options
-    with st.sidebar.expander("Saved CSVs & Email"):
-        st.markdown("### Saved CSV files")
+    with st.sidebar:
+        st.markdown("### Saved CSVs & Email")
+        st.write("")  # Add space for readability
+        st.markdown("#### Saved Files")
         saved = list_saved_csvs()
         selected = None
         selected_path = None
