@@ -7,7 +7,7 @@ calculate total patient-level demand. It leverages `clinical_demand.calculate_gr
 from dataclasses import asdict
 from io import StringIO
 import csv
-from typing import List, Optional
+from typing import List, Optional, Dict, Tuple
 import os
 from datetime import datetime
 import smtplib
@@ -18,7 +18,7 @@ import re
 import streamlit as st
 
 # Local imports
-from clinical_demand import DosingParams, calculate_group_demand
+from clinical_demand import DosingParams, ProductParams, calculate_group_demand
 
 # Must set page config before creating any UI elements
 st.set_page_config(
@@ -38,19 +38,71 @@ st.set_page_config(
 )
 
 
-def group_inputs(prefix: str):
-    patients = st.number_input("Patients", min_value=1, max_value=10000, value=50, step=1, key=f"{prefix}_patients")
-    products = st.number_input("Products per trial", min_value=1, max_value=20, value=1, step=1, key=f"{prefix}_products")
-    product_amount = st.number_input("Product per administration (mg)", min_value=0.0, value=50.0, step=0.1, format="%.2f", key=f"{prefix}_amount")
-    admin_points = st.number_input("Administration points / day", min_value=1, max_value=24, value=1, step=1, key=f"{prefix}_points")
-    days = st.number_input("Days of administration", min_value=1, max_value=365, value=28, step=1, key=f"{prefix}_days")
-    buffer_pct = st.number_input("Contingency buffer (%)", min_value=0, max_value=100, value=0, step=1, key=f"{prefix}_buffer")
-    return DosingParams(
-        patients=int(patients),
-        products=int(products),
+def product_inputs(prefix: str, index: int):
+    st.markdown(f"#### Product {index}")
+    # Product name selector (choose existing or add new)
+    def get_product_names() -> List[str]:
+        if "product_names" not in st.session_state:
+            st.session_state.product_names = []
+        return st.session_state.product_names
+
+    def add_product_name(name: str) -> None:
+        if name and name not in get_product_names():
+            st.session_state.product_names.append(name)
+
+    def select_or_add_product(key: str, label: str = "Product name") -> str:
+        names = get_product_names()
+        options = ["Add New Product..."] + names
+        choice = st.selectbox(label, options=options, key=f"{key}_select")
+        if choice == "Add New Product...":
+            new_name = st.text_input("Enter new product name", key=f"{key}_new")
+            if new_name:
+                add_product_name(new_name)
+                return new_name
+            return ""
+        return choice
+
+    product_name = select_or_add_product(f"{prefix}_prod{index}")
+    product_amount = st.number_input("Product per administration (mg)",
+                                   min_value=0.0, value=50.0, step=0.1, format="%.2f",
+                                   key=f"{prefix}_product{index}_amount")
+    admin_points = st.number_input("Administration points / day",
+                                 min_value=1, max_value=24, value=1, step=1,
+                                 key=f"{prefix}_product{index}_points")
+    days = st.number_input("Days of administration",
+                          min_value=1, max_value=365, value=28, step=1,
+                          key=f"{prefix}_product{index}_days")
+
+    # If the user hasn't provided a product name yet, return None so the caller
+    # can filter out incomplete product entries.
+    if not product_name:
+        return None
+
+    return ProductParams(
+        name=product_name,
         product_amount=float(product_amount),
         admin_points=int(admin_points),
-        days=int(days),
+        days=int(days)
+    )
+
+def group_inputs(prefix: str):
+    patients = st.number_input("Patients", min_value=1, max_value=10000, value=50, step=1, key=f"{prefix}_patients")
+    num_products = st.number_input("Number of distinct products", min_value=1, max_value=20, value=1, step=1, key=f"{prefix}_num_products")
+    buffer_pct = st.number_input("Contingency buffer (%)", min_value=0, max_value=100, value=0, step=1, key=f"{prefix}_buffer")
+    
+    products = []
+    if num_products > 1:
+        st.markdown("### Product-specific parameters")
+        st.info("Configure dosing for each distinct product in this treatment group")
+    
+    for i in range(1, int(num_products) + 1):
+        with st.expander(f"Product {i} Configuration", expanded=(i == 1)):
+            product = product_inputs(prefix, i)
+            products.append(product)
+    
+    return DosingParams(
+        patients=int(patients),
+        products=products,
         buffer_pct=int(buffer_pct),
     )
 
@@ -70,10 +122,17 @@ def trial_section(trial_index: int):
         group_name = st.text_input(f"Group name (Trial {trial_index} - Group {group_index})", value=f"Group {group_index}", key=f"{prefix}_name")
         with st.expander(group_name):
             params = group_inputs(prefix)
-            demand = calculate_group_demand(params)
-            trial_total += demand
-            groups.append({**asdict(params), "demand": int(round(demand)), "trial": trial_index, "trial_name": trial_name, "group": group_index, "group_name": group_name})
-            st.markdown(f"**Group demand:** {int(round(demand)):,}")
+            # calculate_group_demand now returns (total, by_product)
+            group_total, group_by_product = calculate_group_demand(params)
+            trial_total += group_total
+            # Store group details and per-product breakdown for CSV/inspection
+            group_record = {**asdict(params), "demand_mg": int(round(group_total)), "trial": trial_index, "trial_name": trial_name, "group": group_index, "group_name": group_name, "product_breakdown": group_by_product}
+            groups.append(group_record)
+            st.markdown(f"**Group demand:** {int(round(group_total)):,} mg")
+            if group_by_product:
+                st.markdown("**Product breakdown:**")
+                for pname, amt in group_by_product.items():
+                    st.markdown(f"- {pname}: {int(round(amt)):,} mg")
 
     return trial_total, groups
 
@@ -95,11 +154,65 @@ def format_csv(rows: List[dict], summary: Optional[dict] = None) -> str:
         output.write("\n")
 
     if rows:
-        writer = csv.DictWriter(output, fieldnames=list(rows[0].keys()))
+        # Write rows assuming they are already expanded to include per-product mg columns
+        fieldnames = list(rows[0].keys())
+        writer = csv.DictWriter(output, fieldnames=fieldnames)
         writer.writeheader()
         writer.writerows(rows)
 
     return output.getvalue()
+
+
+def expand_product_rows(rows: List[dict]) -> Tuple[List[dict], Dict[str, str]]:
+    """Return expanded rows + mapping of original product name -> sanitized name.
+
+    Expanded rows will have one column per sanitized product name with suffix
+    '_mg'. The function also returns a mapping from original product name to
+    sanitized token so callers can generate matching summary rows.
+    """
+    if not rows:
+        return [], {}
+
+    # Collect all product names across rows
+    product_names = set()
+    for r in rows:
+        pb = r.get("product_breakdown")
+        if isinstance(pb, dict):
+            product_names.update(pb.keys())
+
+    # Create sanitized column names using slugify (defined elsewhere). Handle collisions.
+    sanitized_map: Dict[str, str] = {}
+    used = set()
+    for name in sorted(product_names):
+        san = slugify(name)
+        base = san
+        i = 1
+        while san in used:
+            san = f"{base}_{i}"
+            i += 1
+        used.add(san)
+        sanitized_map[name] = san
+
+    expanded: List[dict] = []
+    for r in rows:
+        # Exclude nested breakdown, per-group aggregate keys, and the
+        # raw `products` list from CSV rows (we expand products into
+        # separate per-product _mg columns instead).
+        newr = {k: v for k, v in r.items() if k not in ("product_breakdown", "demand_mg", "demand", "products")}
+        # Ensure consistent types for CSV (primitives)
+        for k, v in list(newr.items()):
+            if isinstance(v, (list, dict)):
+                newr[k] = str(v)
+
+        pb = r.get("product_breakdown") or {}
+        for orig_name, san in sorted(sanitized_map.items(), key=lambda kv: kv[1]):
+            col = f"{san}_mg"
+            amt = pb.get(orig_name, 0.0)
+            newr[col] = int(round(amt)) if amt is not None else 0
+
+        expanded.append(newr)
+
+    return expanded, sanitized_map
 
 
 def save_csv_to_disk(csv_content: str, filename: str | None = None) -> str:
@@ -120,6 +233,66 @@ def slugify(value: str) -> str:
     value = re.sub(r"[^a-z0-9 _-]", "", value)
     value = re.sub(r"[\s-]+", "_", value)
     return value
+
+
+def inject_custom_css(dark_mode: bool = False) -> None:
+        """Inject custom CSS for scroll snapping and optional dark mode.
+
+        The CSS attempts to target common Streamlit scrollable containers and
+        force children to snap to the left/start when horizontally scrolling.
+        Dark mode overrides a few key variables for a comfortable dark theme.
+        """
+        base_css = r"""
+        /* Force horizontal scroll containers to snap to start (left) */
+        [style*='overflow'] {
+            scroll-snap-type: x mandatory !important;
+            -webkit-overflow-scrolling: touch !important;
+        }
+        [style*='overflow'] > * {
+            scroll-snap-align: start !important;
+            scroll-padding-left: 0 !important;
+        }
+
+        /* Dataframe and table wrappers (common Streamlit containers) */
+        .stDataFrame, .element-container, .css-1d391kg, .streamlit-expander {
+            scroll-snap-type: x mandatory !important;
+        }
+
+        /* Make sure content is left-aligned inside scrollable areas */
+        .stDataFrame div[role='table'], .stDataFrame table, .stDataFrame tbody, .stDataFrame thead {
+            text-align: left !important;
+        }
+
+        /* Slight smoothing for scroll snapping */
+        html {
+            scroll-behavior: smooth;
+            -webkit-font-smoothing: antialiased;
+            -moz-osx-font-smoothing: grayscale;
+        }
+        """
+
+        dark_css = r"""
+        /* Basic dark mode overrides */
+        :root { --bg: #0b1220; --card: #0f1724; --text: #e6eef8; --accent: #2b8cff; }
+        .stApp, .stApp .main, .stApp .block-container {
+            background-color: var(--bg) !important;
+            color: var(--text) !important;
+        }
+        .stMarkdown, .stMetric, .stDataFrame, .stExpander {
+            color: var(--text) !important;
+        }
+        .css-1d391kg, .element-container, .streamlit-expander {
+            background: var(--card) !important;
+            color: var(--text) !important;
+        }
+        a { color: var(--accent) !important; }
+        """
+
+        css = base_css
+        if dark_mode:
+                css = dark_css + "\n" + base_css
+
+        st.markdown(f"<style>{css}</style>", unsafe_allow_html=True)
 
 
 def list_saved_csvs(directory: str = "outputs") -> List[str]:
@@ -159,38 +332,108 @@ def main():
         "Use the controls to model trials and treatment groups. Results show total product administrations needed (including buffer)."
     )
     st.write("")  # Add space after intro
+    # Top-level trial selector (appear above per-trial/group controls)
+    num_trials = st.number_input("Number of trials to model", min_value=1, max_value=10, value=1, step=1)
 
-    col1, col2 = st.columns([2, 3])  # More balanced ratio
+    # Track whether totals should be shown. We default to not showing totals
+    # until the user chooses to calculate them. When the user increases the
+    # number of trials we automatically enable calculation so totals reflect
+    # the newest trial set.
+    if "_prev_num_trials" not in st.session_state:
+        st.session_state["_prev_num_trials"] = int(num_trials)
+    # If the user changed the number of trials, mark for automatic calculation
+    if int(num_trials) != int(st.session_state.get("_prev_num_trials", num_trials)):
+        st.session_state["_prev_num_trials"] = int(num_trials)
+        st.session_state["_show_totals"] = True
 
-    with col1:
-        num_trials = st.number_input("Number of trials to model", min_value=1, max_value=10, value=1, step=1)
-        show_breakdown = st.checkbox("Show per-group breakdown (CSV)", value=True)
-        st.markdown("---")
-        st.markdown("Quick actions:")
-        if st.button("Reset to defaults"):
-            st.experimental_rerun()
+    # Ensure the flag exists (default hidden until user chooses)
+    if "_show_totals" not in st.session_state:
+        st.session_state["_show_totals"] = False
 
+    # Actions dropdown in the sidebar (serves as the "menu dropdown" for quick actions)
+    action = st.sidebar.selectbox("Actions", options=("None", "Reset to defaults"))
+    if action == "Reset to defaults":
+        # Clear session state fully and rerun to present a clean slate.
+        for k in list(st.session_state.keys()):
+            try:
+                del st.session_state[k]
+            except Exception:
+                pass
+        st.rerun()
+
+    # Dark mode toggle in the sidebar (controls CSS injection)
+    dark_mode = st.sidebar.checkbox("Dark mode", value=False, key="dark_mode")
+
+    # Inject CSS after the user's theme choice is known
+    inject_custom_css(dark_mode=dark_mode)
+
+    # Render trials and groups at full page width so they match the width of
+    # the top-level `num_trials` control above.
     all_groups = []
     total_demand = 0.0
 
-    with col2:
-        for t in range(1, int(num_trials) + 1):
-            trial_total, groups = trial_section(t)
-            total_demand += trial_total
-            all_groups.extend(groups)
+    for t in range(1, int(num_trials) + 1):
+        trial_total, groups = trial_section(t)
+        total_demand += trial_total
+        all_groups.extend(groups)
 
         st.markdown("---")
-        st.metric("Total Patient Demand (all trials)", f"{int(round(total_demand)):,}")
 
-        # Always prepare CSV content in case user wants to save or email it
+        # Compute per-product totals across all groups
+        product_totals: dict = {}
+        for g in all_groups:
+            pb = g.get("product_breakdown") or {}
+            for pname, amt in pb.items():
+                product_totals[pname] = product_totals.get(pname, 0.0) + amt
+
+        # Prepare summary header (include product totals; omit overall TotalDemand)
         summary = {
             "Title": st.session_state.get("scenario_title", ""),
             "GeneratedAtUTC": datetime.utcnow().isoformat(),
-            "TotalDemand": int(round(total_demand)),
             "NumTrials": int(num_trials),
         }
+        # Add product totals into summary with clear keys
+        for pname, amt in sorted(product_totals.items()):
+            summary[f"{pname}_total_mg"] = int(round(amt))
 
-        csv_content = format_csv(all_groups, summary=summary)
+        # Expand per-group product breakdown into separate columns for display and CSV
+        expanded_rows, sanitized_map = expand_product_rows(all_groups)
+
+        # Append a bottom summary row with per-product totals (sanitized column names)
+        if expanded_rows:
+            keys = list(expanded_rows[0].keys())
+            summary_row = {k: "" for k in keys}
+            # Prefer to label the summary row in a present label column
+            label_key = None
+            for candidate in ("group_name", "trial_name", "group", "trial"):
+                if candidate in summary_row:
+                    label_key = candidate
+                    break
+            if label_key:
+                summary_row[label_key] = "TOTAL"
+            else:
+                summary_row[keys[0]] = "TOTAL"
+
+            # Fill product totals using sanitized map
+            for orig_name, san in sanitized_map.items():
+                col = f"{san}_mg"
+                amt = product_totals.get(orig_name, 0.0)
+                summary_row[col] = int(round(amt)) if amt is not None else 0
+
+            # Also fill the total number of patients across all groups if a
+            # `patients` column exists in the expanded rows. Compute total
+            # patients from the original `all_groups` records which include
+            # the `patients` field coming from asdict(params).
+            try:
+                total_patients = sum(int(g.get("patients", 0)) for g in all_groups)
+            except Exception:
+                total_patients = 0
+            if "patients" in summary_row:
+                summary_row["patients"] = int(total_patients)
+
+            expanded_rows.append(summary_row)
+
+        csv_content = format_csv(expanded_rows, summary=summary)
         # Persist the latest generated CSV in session state so reloads or
         # reruns (which Streamlit does on page refresh) still have access to it.
         try:
@@ -199,22 +442,73 @@ def main():
             # If session state isn't available for some reason, continue without persisting.
             pass
 
-        if show_breakdown and all_groups:
-            st.markdown("### Demand breakdown by trial and group")
-            st.dataframe(all_groups)
-            st.download_button("Download breakdown CSV", data=csv_content, file_name="demand_breakdown.csv", mime="text/csv")
+        # Show product totals in a prominent summary layout only when the
+        # user has chosen to calculate totals (or when auto-enabled by adding
+        # a trial). This avoids showing intermediate values while the user
+        # is still editing trial inputs.
+        if product_totals and st.session_state.get("_show_totals", False):
+            st.markdown("### Product Totals Summary")
+            # Stack product totals vertically (one per row) for easier scanning
+            for pname, amt in sorted(product_totals.items()):
+                st.metric(label=f"Total {pname}", value=f"{int(round(amt)):,} mg")
 
-            # Save to server button (with optional title included in filename)
-            if st.button("Save breakdown to server (outputs/)"):
-                try:
-                    title = st.session_state.get("scenario_title")
-                    filename = None
+    # Allow the user to toggle the CSV/table breakdown display near the
+    # bottom of the page (moved from the left column per request).
+    # Provide an explicit key to avoid duplicate-element errors when the
+    # page renders multiple times or when trials are added dynamically.
+    show_breakdown = st.checkbox("Show per-group breakdown (CSV)", value=True, key="show_breakdown")
+
+    if show_breakdown and expanded_rows:
+        st.markdown("### Demand breakdown by trial and group")
+        st.dataframe(expanded_rows)
+        # Allow the user to name the file before downloading. Persist the
+        # choice in session state so it survives reruns.
+        default_name = st.session_state.get(
+            "_download_name",
+            f"demand_breakdown_{datetime.utcnow().strftime('%Y%m%dT%H%M%SZ')}.csv",
+        )
+        download_name = st.text_input("Download filename", value=default_name, help="Enter a filename (will be sanitized and saved with .csv)")
+
+        # Sanitize and ensure .csv extension
+        raw = (download_name or "").strip()
+        if raw.lower().endswith(".csv"):
+            base = raw[:-4]
+        else:
+            base = raw
+        safe_download_name = f"{slugify(base)}.csv" if base else f"demand_breakdown_{datetime.utcnow().strftime('%Y%m%dT%H%M%SZ')}.csv"
+        try:
+            st.session_state["_download_name"] = safe_download_name
+        except Exception:
+            pass
+
+        st.download_button("Download breakdown CSV", data=csv_content, file_name=safe_download_name, mime="text/csv")
+
+        # Save to server button (with optional title included in filename)
+        if st.button("Save breakdown to server (outputs/)"):
+            try:
+                title = st.session_state.get("scenario_title")
+                # Prefer the explicitly chosen download name when saving to server
+                filename = st.session_state.get("_download_name")
+                if not filename:
                     if title:
                         filename = f"{slugify(title)}_{datetime.utcnow().strftime('%Y%m%dT%H%M%SZ')}.csv"
-                    saved_path = save_csv_to_disk(csv_content, filename=filename)
-                    st.success(f"Saved CSV to {saved_path}")
-                except Exception as e:
-                    st.error(f"Error saving CSV: {e}")
+                    else:
+                        filename = None
+                saved_path = save_csv_to_disk(csv_content, filename=filename)
+                st.success(f"Saved CSV to {saved_path}")
+            except Exception as e:
+                st.error(f"Error saving CSV: {e}")
+
+        # Calculate/Hide totals controls moved here so they appear with the
+        # CSV/download controls at the bottom of the page. Use explicit keys
+        # to avoid duplicate widget id issues when multiple trials are present.
+        btn_col1, btn_col2 = st.columns([1, 1])
+        with btn_col1:
+            if st.button("Calculate totals", key="calculate_totals_btn"):
+                st.session_state["_show_totals"] = True
+        with btn_col2:
+            if st.button("Hide totals", key="hide_totals_btn"):
+                st.session_state["_show_totals"] = False
 
     # Sidebar: saved files listing and email/send options
     with st.sidebar:
@@ -299,3 +593,6 @@ def main():
             except Exception as e:
                 # Catch-all to ensure a reload doesn't raise an uncaught exception
                 st.error(f"Error sending email: {e}")
+
+if __name__ == "__main__":
+    main()
