@@ -1,8 +1,3 @@
-[server]
-# Force wide mode and ensure proper layout
-layout = "wide"
-showSidebarNavigation = true
-
 [theme]
 # Clean, readable theme optimized for data display
 primaryColor = "#FF4B4B"
@@ -13,4 +8,3 @@ font = "sans serif"
 
 [browser]
 gatherUsageStats = false
-serverAddress = "localhost"

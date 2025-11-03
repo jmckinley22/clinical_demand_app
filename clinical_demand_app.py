@@ -8,8 +8,13 @@ import streamlit as st
 # Must set page config before any other Streamlit commands
 st.set_page_config(
     page_title="Clinical Trial Demand Calculator",
-    layout="wide",
-    initial_sidebar_state="expanded"
+    layout="wide",  # Use full screen width
+    initial_sidebar_state="expanded",  # Show sidebar by default
+    menu_items={
+        'Get Help': 'https://github.com/jmckinley22/dad_math',
+        'Report a bug': 'https://github.com/jmckinley22/dad_math/issues',
+        'About': 'Clinical Trial Patient Demand Calculator - Calculate total product demand across multiple trials.'
+    }
 )
 
 from dataclasses import asdict
